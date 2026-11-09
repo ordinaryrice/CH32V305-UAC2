@@ -108,7 +108,7 @@ void CodecI2c_Init() {
     NVIC_InitTypeDef nvic = {
         .NVIC_IRQChannel = I2C2_ER_IRQn,
         .NVIC_IRQChannelCmd = DISABLE,
-        .NVIC_IRQChannelPreemptionPriority = 2,
+        .NVIC_IRQChannelPreemptionPriority = 3,
         .NVIC_IRQChannelSubPriority = 0
     };
     NVIC_Init(&nvic);

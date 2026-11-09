@@ -20,20 +20,45 @@
 
 static const struct UacParam kDefault = {
     .magic = UAC_PARAM_MAGIC,
+    .sr44k = {
+        44110,   // ceil
+        44100,   // normal
+        44090,   // floor
+    },
+    .sr88k = {
+        44110 * 2,   // ceil
+        44100 * 2,   // normal
+        44090 * 2,   // floor
+    },
+    .sr176k = {
+        44110 * 4,   // ceil
+        44100 * 4,   // normal
+        44090 * 4,   // floor
+    },
+    .sr352k = {
+        44110 * 8,   // ceil
+        44100 * 8,   // normal
+        44090 * 8,   // floor
+    },
     .sr48k = {
-        48080,   // ceil
-        48070,   // normal
-        48060,   // floor
+        48010,   // ceil
+        48000,   // normal
+        47990,   // floor
     },
     .sr96k = {
-        48080 * 2,   // ceil
-        48070 * 2,   // normal
-        48060 * 2,   // floor
+        48010 * 2,   // ceil
+        48000 * 2,   // normal
+        47990 * 2,   // floor
     },
     .sr192k = {
-        48080 * 4,   // ceil
-        48070 * 4,   // normal
-        48060 * 4,   // floor
+        48010 * 4,   // ceil
+        48000 * 4,   // normal
+        47990 * 4,   // floor
+    },
+    .sr384k = {
+        48010 * 8,   // ceil
+        48000 * 8,   // normal
+        47990 * 8,   // floor
     },
 };
 
@@ -64,9 +89,14 @@ void UacParam_Init(struct UacParam* param) {
 }
 
 // 各采样率档位标称值（±0.5% 容差）
-#define UAC_SR_48K   48000u
-#define UAC_SR_96K   96000u
-#define UAC_SR_192K  192000u
+#define UAC_SR_44K    44100u
+#define UAC_SR_88K    88200u
+#define UAC_SR_176K   176400u
+#define UAC_SR_352K   352800u
+#define UAC_SR_48K    48000u
+#define UAC_SR_96K    96000u
+#define UAC_SR_192K   192000u
+#define UAC_SR_384K   384000u
 #define UAC_SR_TOLERANCE_PER_MILLE 5u   // 0.5% (5/1000)
 
 static uint32_t ClampRate(uint32_t v, uint32_t nominal) {
@@ -76,6 +106,18 @@ static uint32_t ClampRate(uint32_t v, uint32_t nominal) {
 }
 
 void UacParam_Clamp(struct UacParam* param) {
+    param->sr44k.ceil    = ClampRate(param->sr44k.ceil, UAC_SR_44K);
+    param->sr44k.normal  = ClampRate(param->sr44k.normal, UAC_SR_44K);
+    param->sr44k.floor   = ClampRate(param->sr44k.floor, UAC_SR_44K);
+    param->sr88k.ceil    = ClampRate(param->sr88k.ceil, UAC_SR_88K);
+    param->sr88k.normal  = ClampRate(param->sr88k.normal, UAC_SR_88K);
+    param->sr88k.floor   = ClampRate(param->sr88k.floor, UAC_SR_88K);
+    param->sr176k.ceil   = ClampRate(param->sr176k.ceil, UAC_SR_176K);
+    param->sr176k.normal = ClampRate(param->sr176k.normal, UAC_SR_176K);
+    param->sr176k.floor  = ClampRate(param->sr176k.floor, UAC_SR_176K);
+    param->sr352k.ceil   = ClampRate(param->sr352k.ceil, UAC_SR_352K);
+    param->sr352k.normal = ClampRate(param->sr352k.normal, UAC_SR_352K);
+    param->sr352k.floor  = ClampRate(param->sr352k.floor, UAC_SR_352K);
     param->sr48k.ceil    = ClampRate(param->sr48k.ceil, UAC_SR_48K);
     param->sr48k.normal  = ClampRate(param->sr48k.normal, UAC_SR_48K);
     param->sr48k.floor   = ClampRate(param->sr48k.floor, UAC_SR_48K);
@@ -85,6 +127,9 @@ void UacParam_Clamp(struct UacParam* param) {
     param->sr192k.ceil   = ClampRate(param->sr192k.ceil, UAC_SR_192K);
     param->sr192k.normal = ClampRate(param->sr192k.normal, UAC_SR_192K);
     param->sr192k.floor  = ClampRate(param->sr192k.floor, UAC_SR_192K);
+    param->sr384k.ceil   = ClampRate(param->sr384k.ceil, UAC_SR_384K);
+    param->sr384k.normal = ClampRate(param->sr384k.normal, UAC_SR_384K);
+    param->sr384k.floor  = ClampRate(param->sr384k.floor, UAC_SR_384K);
 }
 
 bool UacParam_Write(const struct UacParam* param) {

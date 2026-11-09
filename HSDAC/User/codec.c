@@ -26,7 +26,7 @@
 // variable
 // --------------------------------------------------------------------------------
 
-static uint32_t sample_rate_;
+static uint32_t sample_rate_ = 48000;
 static struct UacParam uac_param_;
 
 static int16_t usb_volume_[2];
@@ -46,7 +46,7 @@ static uint8_t GetRegVolume(uint8_t channel) {
     else {
         vol = (uint16_t)(-usb_volume_[channel]) >> 7;
     }
-    return vol;
+    return 0xff - vol;
 }
 
 static void _I2cHandler_RegVolume1(bool failed) {
@@ -69,23 +69,6 @@ bool Codec_Init() {
     CodecI2c_Init();
     CodecI2s_Init();
 
-    // PA1/PA5 -> RESETB
-    RCC_APB2PeriphClockCmd(RCC_APB2Periph_GPIOA, ENABLE);
-    GPIO_InitTypeDef init;
-    init.GPIO_Mode = GPIO_Mode_AIN;
-    init.GPIO_Speed = GPIO_Speed_50MHz;
-    init.GPIO_Pin = GPIO_Pin_5;
-    GPIO_Init(GPIOA, &init);
-    init.GPIO_Mode = GPIO_Mode_Out_PP;
-    init.GPIO_Speed = GPIO_Speed_50MHz;
-    init.GPIO_Pin = GPIO_Pin_1;
-    GPIO_Init(GPIOA, &init);
-
-    GPIO_WriteBit(GPIOA, GPIO_Pin_1, Bit_RESET);
-    Delay_Ms(100);
-    GPIO_WriteBit(GPIOA, GPIO_Pin_1, Bit_SET);
-    Delay_Ms(100);
-
     // 首次从 UacParam（flash 校准表）加载并缓存
     UacParam_Init(&uac_param_);
 
@@ -99,6 +82,7 @@ bool Codec_Init() {
 }
 
 void Codec_Start() {
+    AudioDsp_Reset();
     CodecI2s_Start();
 }
 
@@ -111,6 +95,16 @@ uint32_t Codec_GetSampleRate() {
 }
 
 void Codec_SetSampleRate(uint32_t sample_rate) {
+    /*
+     * The USB host requests the audio stream rate via UAC2 Clock Entity.
+     * In this bridge design the CH32V305 does not generate the A/V bit clock,
+     * but it still selects the external I2S master clock divider so the
+     * downstream audio path follows the host-selected sample rate.
+     */
+    // 同じレートなら何もしない
+    if (sample_rate_ == sample_rate) {
+        return;
+    }
     sample_rate_ = sample_rate;
     CodecI2s_SetSampleRate(sample_rate);
 }
@@ -198,6 +192,16 @@ int16_t Codec_GetVolume(uint8_t channel) {
 
 const struct UacFeedbackRate* Codec_GetFeedbackRate(void) {
     switch (sample_rate_) {
+        case 352800:
+            return &uac_param_.sr352k;
+        case 176400:
+            return &uac_param_.sr176k;
+        case 88200:
+            return &uac_param_.sr88k;
+        case 44100:
+            return &uac_param_.sr44k;
+        case 384000:
+            return &uac_param_.sr384k;
         case 192000:
             return &uac_param_.sr192k;
         case 96000:
@@ -221,7 +225,7 @@ void Codec_Handler() {
     if (status == kCodecI2cError_Busy) return;
 
     if (status == kCodecI2cError_Timeout) {
-        printf("es9018k reg set timeout\n\r");
+        // printf("es9018k reg set timeout\n\r");
 
         if (i2c_handler_) {
             i2c_handler_(true);

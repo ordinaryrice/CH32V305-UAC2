@@ -29,8 +29,10 @@ void Tick_Init(void) {
     init.TIM_RepetitionCounter = 0;
     // init.TIM_Period = 1000 - 1;
     // init.TIM_Prescaler = 96 - 1;
-    init.TIM_Period = 7013 - 1;
-    init.TIM_Prescaler = 28 - 1;
+    init.TIM_Period = 1000 - 1;
+    init.TIM_Prescaler = 144 - 1;
+    // init.TIM_Period = 7013 - 1;
+    // init.TIM_Prescaler = 28 - 1;
     TIM_TimeBaseInit(TIM2, &init);
 
     NVIC_InitTypeDef nvic;

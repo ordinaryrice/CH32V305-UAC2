@@ -10,9 +10,14 @@ struct UacFeedbackRate {
 
 struct UacParam {
     uint32_t magic;
+    struct UacFeedbackRate sr44k;   // 44.1kHz
+    struct UacFeedbackRate sr88k;   // 88.2kHz
+    struct UacFeedbackRate sr176k;  // 176.4kHz
+    struct UacFeedbackRate sr352k;  // 352.8kHz
     struct UacFeedbackRate sr48k;   // 48kHz
     struct UacFeedbackRate sr96k;   // 96kHz
     struct UacFeedbackRate sr192k;  // 192kHz
+    struct UacFeedbackRate sr384k;  // 384kHz
 };
 
 // 初始化参数区：无 MAGIC 时写入默认值。
