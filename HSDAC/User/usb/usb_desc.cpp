@@ -152,15 +152,16 @@ Config{
                     0
                 }
             },
+            /*
+             * Fixed 32-bit audio stream for the external I2S bridge.
+             * The hardware link operates in normal Philips I2S mode (LRCK
+             * shifts by 1 BCK relative to the first bit), so only the 32-bit
+             * format is exposed to the USB host.
+             */
             AudioStreamFormat{
                 1,
                 4,
                 32
-            },
-            AudioStreamFormat{
-                1,
-                4,
-                24
             },
             Endpoint{
                 IsochronousInitPack{
@@ -179,7 +180,7 @@ Config{
                 IsochronousInitPack{
                     UAC2_STREAM_FEEDBACK_IN_EP_ADDRESS,
                     UAC2_STREAM_FEEDBACK_IN_EP_MPSIZE,
-                    1,
+                    3,
                     SynchronousType::None,
                     IsoEpType::Feedback
                 }
@@ -312,8 +313,8 @@ const uint8_t MySerNumInfo[] =
 };
 
 static constexpr auto kUac2SampleRateTable =
-tpusb::uac2::audio_function::ClockSampleRateList<3> {
-    {48000, 96000, 192000}
+tpusb::uac2::audio_function::ClockSampleRateList<8> {
+    {44100, 88200, 176400, 352800, 48000, 96000, 192000, 384000}
 };
 
 extern "C" {

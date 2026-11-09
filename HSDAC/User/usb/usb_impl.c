@@ -52,7 +52,35 @@ static struct {
 static bool cdc_can_send;
 
 static struct StereoSample uac2_audio_buffer_[UAC_MAX_PACKAGE_SIZE];
-static uint32_t uac2_feedback_val;
+static volatile uint32_t uac2_feedback_val;
+static volatile uint32_t _fs = 10;
+static volatile uint32_t uac2_out_packet_count;
+static volatile uint32_t uac2_out_byte_count;
+static volatile uint16_t uac2_out_count_min = 0xffffu;
+static volatile uint16_t uac2_out_count_max;
+static volatile uint32_t uac2_out_invalid_count;
+static volatile uint32_t uac2_out_zero_count;
+static volatile uint32_t uac2_set_cur_count;
+static volatile uint32_t uac2_set_cur_ignored_count;
+
+/*
+ * SOF-granularity diagnostic counters (updated in UsbImpl_HandleSof):
+ *   sof_out_packet_snapshot_ / sof_out_byte_snapshot_  -- previous SOF values
+ *   uac2_sof_out_packets_   -- OUT packets received since last SOF (delta)
+ *   uac2_sof_out_bytes_     -- OUT bytes received since last SOF (delta)
+ *   uac2_missing_sof_count_ -- SOF ticks where delta packets == 0
+ *   uac2_short_out_count_   -- cumulative packets below the microframe minimum
+ *   uac2_short_out_run_     -- current run length of consecutive short packets
+ *   uac2_short_out_max_run_ -- maximum observed run length
+ */
+static volatile uint32_t sof_out_packet_snapshot_;
+static volatile uint32_t sof_out_byte_snapshot_;
+static volatile uint32_t uac2_sof_out_packets_;
+static volatile uint32_t uac2_sof_out_bytes_;
+static volatile uint32_t uac2_missing_sof_count_;
+static volatile uint32_t uac2_short_out_count_;
+static volatile uint32_t uac2_short_out_run_;
+static volatile uint32_t uac2_short_out_max_run_;
 
 static uint8_t hid_idle;
 
@@ -70,15 +98,22 @@ static void UsbUac2_HandleClassRequest(struct UsbDevice* device, bool* allow, bo
 static void UsbCdc_HandleClassRequest(struct UsbDevice* device, bool* allow, bool setup_phase);
 static void UsbHid_HandleClassRequest(struct UsbDevice* device, bool* allow, bool setup_phase);
 static uint32_t ConvertSamplerate2FeedbackRate(uint32_t fs);
+static uint32_t ConvertBckKHz2FeedbackRate(uint32_t bck_khz);
 
 // --------------------------------------------------------------------------------
 // implement
 // --------------------------------------------------------------------------------
+static uint32_t ConvertBckKHz2FeedbackRate(uint32_t bck_khz) {
+    /*
+     * UAC2 asynchronous feedback uses 16.16 samples/frame:
+     * sample_rate = bck_hz / 64; feedback = sample_rate * 65536
+     * bck_khz * 1000 / 64 * 65536 = bck_khz * 1024.
+     */
+    return bck_khz << 10;
+}
+
 static uint32_t ConvertSamplerate2FeedbackRate(uint32_t fs) {
-    uint32_t intergal = fs / 8000;
-    uint32_t frac = (fs % 8000) * 65536 / 8000;
-    uint32_t rate = (intergal << 16) | (frac & 0xffff);
-    return rate;
+    return (uint32_t)(((uint64_t)fs << 16) & 0xffffffffu);
 }
 
 void UsbImpl_InitAndOpenEndpoints() {
@@ -148,7 +183,120 @@ void UsbImpl_HandleVendorRequest(struct UsbDevice* device, bool* allow, bool set
 }
 
 void UsbImpl_HandleSof() {
+    static uint16_t last_sof_frame_no = 0xFFFFu;
 
+    /*
+     * In high-speed mode, FRAME_NO[15:13] is the microframe number and
+     * FRAME_NO[10:0] is the 1 ms frame number. Sample once at microframe 0.
+     */
+    uint16_t frame_no = USBHSD->FRAME_NO;
+    uint16_t frame_num = frame_no & USBHS_SOF_FRAME_NUM;
+    if ((frame_no & USBHS_MICRO_FRAME_NUM) == 0u && frame_num != last_sof_frame_no)
+    {
+        uint32_t actual_bck_khz = CodecI2s_GetBckKHzApprox();
+        if (actual_bck_khz == 0u) {
+            actual_bck_khz = Codec_GetSampleRate() / 1000 * 64;
+            _fs = 0;
+        }
+        uac2_feedback_val = ConvertBckKHz2FeedbackRate(actual_bck_khz);
+        _fs = (actual_bck_khz) >> 6;
+
+        /* --- SOF-granularity diagnostics --- */
+        uint32_t pkt_now  = uac2_out_packet_count;
+        uint32_t byte_now = uac2_out_byte_count;
+        uint32_t dpkt  = pkt_now  - sof_out_packet_snapshot_;
+        uint32_t dbyte = byte_now - sof_out_byte_snapshot_;
+        sof_out_packet_snapshot_ = pkt_now;
+        sof_out_byte_snapshot_   = byte_now;
+
+        uac2_sof_out_packets_ = dpkt;
+        uac2_sof_out_bytes_   = dbyte;
+
+        /* missing-SOF: a 1 ms frame with no OUT completion */
+        if (dpkt == 0u) {
+            ++uac2_missing_sof_count_;
+        }
+
+        /*
+         * Short-packet detection: a normal 48 kHz High-Speed microframe
+         * carries sample_rate/8000 stereo samples.  Any packet below that
+         * byte count is considered short.  Zero-length packets are also
+         * counted here (they are already counted in uac2_out_zero_count).
+         */
+        uint32_t min_frame_bytes =
+            (Codec_GetSampleRate() / 8000u) * (uint32_t)sizeof(struct StereoSample);
+        if (dbyte > 0u && dbyte < min_frame_bytes) {
+            ++uac2_short_out_count_;
+            ++uac2_short_out_run_;
+            if (uac2_short_out_run_ > uac2_short_out_max_run_) {
+                uac2_short_out_max_run_ = uac2_short_out_run_;
+            }
+        } else {
+            uac2_short_out_run_ = 0u;
+        }
+
+        last_sof_frame_no = frame_num;
+    }
+}
+
+uint32_t GetFeedBackVal() {
+    return uac2_feedback_val;
+}
+
+uint32_t GetFBSampleRate() {
+    return _fs;
+}
+
+uint32_t UsbUac2_GetOutPacketCount(void) {
+    return uac2_out_packet_count;
+}
+
+uint32_t UsbUac2_GetOutByteCount(void) {
+    return uac2_out_byte_count;
+}
+
+uint16_t UsbUac2_GetOutCountMin(void) {
+    return uac2_out_count_min;
+}
+
+uint16_t UsbUac2_GetOutCountMax(void) {
+    return uac2_out_count_max;
+}
+
+uint32_t UsbUac2_GetOutInvalidCount(void) {
+    return uac2_out_invalid_count;
+}
+
+uint32_t UsbUac2_GetSetCurCount(void) {
+    return uac2_set_cur_count;
+}
+
+uint32_t UsbUac2_GetSetCurIgnoredCount(void) {
+    return uac2_set_cur_ignored_count;
+}
+
+uint32_t UsbUac2_GetOutZeroCount(void) {
+    return uac2_out_zero_count;
+}
+
+uint32_t UsbUac2_GetSofOutPackets(void) {
+    return uac2_sof_out_packets_;
+}
+
+uint32_t UsbUac2_GetSofOutBytes(void) {
+    return uac2_sof_out_bytes_;
+}
+
+uint32_t UsbUac2_GetMissingSofCount(void) {
+    return uac2_missing_sof_count_;
+}
+
+uint32_t UsbUac2_GetShortOutCount(void) {
+    return uac2_short_out_count_;
+}
+
+uint32_t UsbUac2_GetShortOutMaxRun(void) {
+    return uac2_short_out_max_run_;
 }
 
 void UsbImpl_SetInterfaceAlter(uint8_t interface, uint8_t alter, bool* allow) {
@@ -159,9 +307,32 @@ void UsbImpl_SetInterfaceAlter(uint8_t interface, uint8_t alter, bool* allow) {
         switch (interface) {
             case UAC2_STREAM_INTERFACE:
                 if (alter == 0) {
+                    USBHSD->UEP1_RX_CTRL = USBHS_UEP_R_RES_NAK;
+                    USBHSD->UEP1_TX_CTRL = USBHS_UEP_T_RES_NAK;
                     Codec_Stop();
                 }
                 else {
+                    uac2_out_packet_count = 0;
+                    uac2_out_byte_count = 0;
+                    uac2_out_invalid_count = 0;
+                    uac2_out_zero_count = 0;
+                    uac2_set_cur_count = 0;
+                    uac2_set_cur_ignored_count = 0;
+                    uac2_out_count_min = 0xffffu;
+                    uac2_out_count_max = 0;
+                    sof_out_packet_snapshot_ = 0;
+                    sof_out_byte_snapshot_ = 0;
+                    uac2_sof_out_packets_ = 0;
+                    uac2_sof_out_bytes_ = 0;
+                    uac2_missing_sof_count_ = 0;
+                    uac2_short_out_count_ = 0;
+                    uac2_short_out_run_ = 0;
+                    uac2_short_out_max_run_ = 0;
+                    USBHSD->UEP1_TX_DMA = (uint32_t)&uac2_feedback_val;
+                    USBHSD->UEP1_TX_LEN = 4;
+                    USBHSD->UEP1_TX_CTRL = USBHS_UEP_T_RES_ACK;
+                    USBHSD->UEP1_RX_DMA = (uint32_t)uac2_audio_buffer_;
+                    USBHSD->UEP1_RX_CTRL = USBHS_UEP_R_RES_ACK;
                     Codec_Start();
                 }
                 break;
@@ -235,7 +406,9 @@ void UsbImpl_EpInComplete(uint8_t ep_num) {
             USBHSD->UEP4_TX_CTRL |= USBHS_UEP_T_RES_NAK;
             break;
         case UAC2_STREAM_FEEDBACK_IN_EP_ADDRESS & 0xf:
-            // do nothing
+            USBHSD->UEP1_TX_DMA = (uint32_t)&uac2_feedback_val;
+            USBHSD->UEP1_TX_LEN = 4;
+            USBHSD->UEP1_TX_CTRL = USBHS_UEP_T_RES_ACK;
             break;
         case CDC_CONTROL_UPLOAD_IN_EP_ADDRESS & 0xf:
             // do nothing
@@ -273,7 +446,34 @@ _cdc_ep_send:
 void UsbImpl_EpOutComplete(uint8_t ep_num, uint16_t count) {
     switch (ep_num) {
         case UAC2_STREAM_DATA_OUT_EP_ADDRESS & 0xf:
-            AudioDsp_Push(uac2_audio_buffer_, count);
+            ++uac2_out_packet_count;
+            uac2_out_byte_count += count;
+            if (count < uac2_out_count_min) uac2_out_count_min = count;
+            if (count > uac2_out_count_max) uac2_out_count_max = count;
+            if (count == 0u) ++uac2_out_zero_count;
+
+            /*
+             * Rearm the endpoint BEFORE processing the received data.
+             * If we push to the FIFO first, the endpoint sits with RES=NAK
+             * for the duration of the memcpy.  The host retries and may
+             * collide with the next SOF boundary, causing supply gaps.
+             * Rearming first lets the hardware accept the next OUT token
+             * as soon as possible while we copy the previous buffer.
+             *
+             * The RX DMA address is kept pointing at the same static buffer
+             * (uac2_audio_buffer_).  This is safe because the USB ISR is
+             * non-reentrant: the next OUT completion cannot fire until we
+             * return from this handler, so the buffer we are about to read
+             * in AudioDsp_Push() cannot be overwritten before we finish.
+             */
+            USBHSD->UEP1_RX_DMA = (uint32_t)uac2_audio_buffer_;
+            USBHSD->UEP1_RX_CTRL = USBHS_UEP_R_RES_ACK;
+
+            if ((count & (sizeof(struct StereoSample) - 1u)) == 0u) {
+                AudioDsp_Push(uac2_audio_buffer_, count);
+            } else {
+                ++uac2_out_invalid_count;
+            }
             break;
         case CDC_DATA_OUT_EP_ADDRESS & 0xf:
             USBHSD->UEP3_RX_CTRL ^= USBHS_UEP_T_TOG_DATA1;
@@ -332,7 +532,11 @@ static void UsbUac2_HandleClassRequest(struct UsbDevice* device, bool* allow, bo
                 case UAC2_SET_CUR(0x0100):
                     *allow = true;
                     if (!setup_phase) {
+                        ++uac2_set_cur_count;
                         uint32_t fs = *(uint32_t*)device->usb_ep0_buffer;
+                        if (Codec_GetSampleRate() == fs) {
+                            ++uac2_set_cur_ignored_count;
+                        }
                         Codec_SetSampleRate(fs);
                     }
                     break;
